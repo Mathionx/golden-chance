@@ -27,5 +27,5 @@ const GoldenChanceConfig = {
 
   // Full URL of the deployed telegram-auth edge function, e.g.
   // "https://YOUR-PROJECT-REF.supabase.co/functions/v1/telegram-auth"
-  TELEGRAM_AUTH_URL: "https://ihjcepfilubptjaclhsq.supabase.co/functions/v1/super-handler",
+  TELEGRAM_AUTH_URL: "https://ihjcepfilubptjaclhsq.supabase.co/functions/v1/swift-service",
 };
