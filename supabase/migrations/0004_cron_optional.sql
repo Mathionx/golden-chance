@@ -1,0 +1,28 @@
+-- ============================================================================
+-- GOLDEN CHANCE — OPTIONAL: AUTOMATIC MODE VIA pg_cron
+-- ============================================================================
+-- This migration is OPTIONAL and only needed if you want "automatic" draw
+-- mode to actually fire on its own. "Manual" mode (admin presses the
+-- button) works without any of this.
+--
+-- pg_cron must be enabled first:
+--   Supabase Dashboard → Database → Extensions → enable "pg_cron"
+-- (This cannot be done from a plain SQL migration on most Supabase
+-- projects, which is why it's called out as manual setup in the README.)
+--
+-- Once pg_cron is enabled, run the statement below once. It schedules
+-- run_scheduled_draws() (defined in 0003_functions.sql) to check every
+-- 5 minutes whether any round is due and draw_settings.mode = 'automatic'.
+-- ============================================================================
+
+-- select cron.schedule(
+--   'golden-chance-auto-draw',   -- job name
+--   '*/5 * * * *',               -- every 5 minutes
+--   $$ select public.run_scheduled_draws(); $$
+-- );
+
+-- To inspect scheduled jobs:
+--   select * from cron.job;
+--
+-- To remove the job later:
+--   select cron.unschedule('golden-chance-auto-draw');
