@@ -22,8 +22,8 @@
  */
 
 const GoldenChanceConfig = {
-  SUPABASE_URL: "https://YOUR-PROJECT-REF.supabase.co",
-  SUPABASE_ANON_KEY: "YOUR-PUBLIC-ANON-KEY",
+  SUPABASE_URL: "https://ihjcepfilubptjaclhsq.supabase.co",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImloamNlcGZpbHVicHRqYWNsaHNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzMTU2MTYsImV4cCI6MjEwNDg5MTYxNn0.ozlDh2gsO9t1IpUQobOq-FSPV37J_vLLfqFK0166Nuw",
 
   // Full URL of the deployed telegram-auth edge function, e.g.
   // "https://YOUR-PROJECT-REF.supabase.co/functions/v1/telegram-auth"
