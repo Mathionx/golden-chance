@@ -25,6 +25,17 @@
   --color-terracotta: #ab4f39; /* ineligible / caution, used sparingly */
   --color-terracotta-tint: #f1ddd6;
 
+  /* Fixed brand tokens for the wheel specifically — deliberately NOT
+     re-mapped by the dark-theme block below. The wheel is Golden
+     Chance's own mark (see the logo: dark face, thin gold ring, small
+     gold pointer) and keeps that same treatment regardless of whether
+     the surrounding app is in light or dark mode, the same way a
+     printed logo doesn't change color depending on the page it's on. */
+  --color-charcoal-deep: #1c1712;
+  --color-wheel-slice-a: #241e17;
+  --color-wheel-slice-b: #2c2419;
+  --color-cream: #f3ecdd;
+
   /* Telegram theme hooks — set at runtime by telegram.js from
      Telegram.WebApp.themeParams so the app shell blends into the
      client chrome. Components mostly use the --color-* tokens above;
@@ -238,7 +249,7 @@ select:focus-visible,
    HOME — CYCLE RING (hero)
 =================================================================== */
 
-.cycle-hero {
+.wheel-hero {
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-lg);
@@ -249,65 +260,82 @@ select:focus-visible,
   text-align: center;
 }
 
-.cycle-ring-wrap {
-  position: relative;
-  width: 210px;
-  height: 210px;
+.wheel-hero-caption {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink-soft);
   margin-bottom: var(--space-4);
 }
 
-.cycle-ring-wrap svg { width: 100%; height: 100%; }
+.wheel-stage {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  margin-bottom: var(--space-3);
+}
 
-.cycle-ring-center {
+.wheel-pointer {
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 16px solid var(--color-gold);
+  z-index: 3;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
 }
 
-.cycle-ring-week-label {
-  font-size: 11px;
-  color: var(--color-ink-faint);
-  margin-bottom: 2px;
+.wheel-rotor {
+  width: 100%;
+  height: 100%;
+  will-change: transform;
 }
 
-.cycle-ring-week {
+.wheel-rotor.is-spinning-indefinite {
+  animation: wheel-fast-spin 0.9s linear infinite;
+}
+
+@keyframes wheel-fast-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.wheel-svg { width: 100%; height: 100%; overflow: visible; }
+
+.wheel-ring-outer { fill: var(--color-charcoal-deep); }
+.wheel-ring-line { fill: none; stroke: var(--color-gold); stroke-width: 2.5; }
+.wheel-face { fill: var(--color-charcoal-deep); }
+.wheel-face-a { fill: var(--color-wheel-slice-a); }
+.wheel-face-b { fill: var(--color-wheel-slice-b); }
+.wheel-divider { stroke: var(--color-gold); stroke-width: 1; opacity: 0.55; }
+.wheel-label {
+  fill: var(--color-cream);
   font-family: var(--font-display);
-  font-size: 40px;
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1;
+  letter-spacing: 0.3px;
+}
+.wheel-hub {
+  fill: var(--color-gold);
+  stroke: var(--color-charcoal-deep);
+  stroke-width: 3;
 }
 
-.cycle-ring-cycle {
-  font-size: 12px;
+.wheel-hero-sub {
+  font-size: 13.5px;
   color: var(--color-ink-soft);
-  margin-top: 4px;
+  margin-bottom: var(--space-2);
 }
 
-.dot-eligible { fill: var(--color-gold); }
-.dot-won { fill: var(--color-line); }
-
-.cycle-legend {
-  display: flex;
-  gap: var(--space-5);
-  font-size: 12px;
-  color: var(--color-ink-soft);
-  margin-top: var(--space-2);
+.draw-action-area {
+  width: 100%;
+  margin-top: var(--space-4);
 }
 
-.cycle-legend span { display: inline-flex; align-items: center; gap: 6px; }
-
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.legend-dot.gold { background: var(--color-gold); }
-.legend-dot.muted { background: var(--color-line); }
+.wheel-reveal-card { margin-top: var(--space-4); }
 
 /* status pill */
 .status-pill {
@@ -318,7 +346,7 @@ select:focus-visible,
   font-weight: 600;
   padding: 6px 14px;
   border-radius: var(--radius-pill);
-  margin-top: var(--space-4);
+  margin-top: var(--space-1);
 }
 
 .status-pill.scheduled { background: var(--color-gold-tint); color: var(--color-gold-deep); }
@@ -668,120 +696,6 @@ select:focus-visible,
 }
 
 /* ===================================================================
-   DRAW SCREEN
-=================================================================== */
-
-.draw-stage {
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-6) var(--space-5);
-  text-align: center;
-}
-
-.draw-stage-heading {
-  font-size: 13px;
-  color: var(--color-ink-soft);
-  margin-bottom: var(--space-5);
-}
-
-.draw-name-window {
-  height: 170px;
-  border-radius: var(--radius-md);
-  background: var(--color-paper);
-  border: 1px solid var(--color-line);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-  margin-bottom: var(--space-5);
-}
-
-.draw-name-window::before,
-.draw-name-window::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0;
-  height: 46px;
-  pointer-events: none;
-  z-index: 2;
-}
-.draw-name-window::before { top: 0; background: linear-gradient(var(--color-paper), transparent); }
-.draw-name-window::after { bottom: 0; background: linear-gradient(transparent, var(--color-paper)); }
-
-.draw-name-track {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  transition: transform 0.15s ease;
-}
-
-.draw-name-item {
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
-  font-size: 21px;
-  font-weight: 600;
-  color: var(--color-ink-faint);
-  width: 100%;
-}
-
-.draw-name-item.is-current {
-  color: var(--color-ink);
-}
-
-.draw-name-window.is-idle .draw-name-item {
-  color: var(--color-ink-faint);
-}
-
-/* The one moment in the app that's allowed to feel special: a warm
-   charcoal-to-gold gradient with a soft glow, not a flashing/strobing
-   casino effect. One gentle pulse, then it settles. */
-.draw-name-window.is-revealed {
-  background: linear-gradient(165deg, #2a2116 0%, #3a2c16 55%, #4a3416 100%);
-  border-color: var(--color-gold-deep);
-  box-shadow: 0 0 0 1px var(--color-gold-deep), 0 0 48px 6px var(--color-gold-glow);
-  animation: reveal-glow-pulse 1.8s ease-out 1;
-}
-
-.draw-name-window.is-revealed .draw-name-item {
-  color: #fbe8bf;
-  text-shadow: 0 0 18px rgba(240, 197, 116, 0.5);
-}
-
-.draw-name-window.is-revealed::before,
-.draw-name-window.is-revealed::after { display: none; }
-
-@keyframes reveal-glow-pulse {
-  0% { box-shadow: 0 0 0 1px var(--color-gold-deep), 0 0 0 0 var(--color-gold-glow); }
-  40% { box-shadow: 0 0 0 1px var(--color-gold-deep), 0 0 64px 14px var(--color-gold-glow); }
-  100% { box-shadow: 0 0 0 1px var(--color-gold-deep), 0 0 48px 6px var(--color-gold-glow); }
-}
-
-.draw-progress-label {
-  font-size: 13px;
-  color: var(--color-ink-soft);
-  margin-bottom: var(--space-4);
-  min-height: 18px;
-}
-
-.draw-actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.draw-fineprint {
-  margin-top: var(--space-5);
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  line-height: 1.6;
-}
-
-/* ===================================================================
    ADMIN
 =================================================================== */
 
@@ -1124,4 +1038,76 @@ select:focus-visible,
   font-size: 14px;
   max-width: 320px;
   line-height: 1.6;
+}
+
+/* ===================================================================
+   CUSTOM CONFIRM MODAL (replaces window.confirm/alert — see modal.js)
+=================================================================== */
+
+.gc-confirm-sheet {
+  text-align: center;
+}
+
+.gc-confirm-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto var(--space-3);
+}
+
+.gc-confirm-icon.is-neutral { background: var(--color-gold-tint); color: var(--color-gold-deep); }
+.gc-confirm-icon.is-danger { background: var(--color-terracotta-tint); color: var(--color-terracotta); }
+
+.gc-confirm-sheet .modal-sheet-title { text-align: center; }
+
+.gc-confirm-message {
+  font-size: 14px;
+  color: var(--color-ink-soft);
+  line-height: 1.6;
+  margin: 0 0 var(--space-2);
+}
+
+.gc-confirm-phrase-wrap {
+  text-align: left;
+  margin-top: var(--space-3);
+}
+
+.gc-confirm-phrase-wrap label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-terracotta);
+  margin-bottom: 6px;
+}
+
+/* ===================================================================
+   CUSTOM TIME / DATE-TIME PICKER (see timePicker.js)
+=================================================================== */
+
+.time-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.time-picker-part {
+  flex: 1;
+  text-align: center;
+}
+
+.time-picker-colon {
+  font-weight: 700;
+  color: var(--color-ink-soft);
+}
+
+.time-picker-ampm {
+  flex: 1.2;
+}
+
+.datetime-picker {
+  display: grid;
+  gap: var(--space-2);
 }
