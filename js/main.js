@@ -17,7 +17,6 @@
 const NAV_ITEMS = [
   { screen: "home", label: "Home", icon: ICONS.home },
   { screen: "member", label: "Me", icon: ICONS.member },
-  { screen: "draw", label: "Draw", icon: ICONS.draw },
   { screen: "history", label: "History", icon: ICONS.history },
   { screen: "admin", label: "Admin", icon: ICONS.admin, adminOnly: true },
 ];
@@ -65,16 +64,49 @@ function renderFatalError(message) {
   `;
 }
 
-/** Live updates so everyone watching sees the same authoritative draw result. */
+/**
+ * Live updates so everyone watching sees the same authoritative draw
+ * result — the database row is the source of truth, never a client
+ * timer. Two events matter:
+ *   - rounds UPDATE to status='drawing': lets passive viewers start
+ *     the wheel spinning before the winner is even known (suspense),
+ *     without ever knowing or guessing the outcome themselves.
+ *   - winners INSERT: the authoritative result. Every connected
+ *     client (including the admin's own other tabs/devices) spins to
+ *     the same segment because eligible_snapshot + member_id came
+ *     straight from the database row, not from local computation.
+ * AppState.isDrawingLocally guards against a client re-animating its
+ * own already-in-progress draw when its own writes echo back.
+ */
 function initRealtime() {
+  let lastAnimatedRoundId = null;
+
   subscribeToDrawUpdates({
-    onRoundUpdate: () => {
-      if (["home", "draw", "member"].includes(AppState.activeScreen)) {
+    onRoundChange: (round, eventType) => {
+      if (AppState.isDrawingLocally) return; // this client is the initiator; it's already animating
+
+      if (eventType === "UPDATE" && round.status === "drawing" && AppState.activeScreen === "home") {
+        playIndefiniteSpin();
+        return;
+      }
+      if (["home", "member"].includes(AppState.activeScreen)) {
         switchScreen(AppState.activeScreen);
       }
     },
-    onWinnerInsert: () => {
-      if (["home", "history", "member"].includes(AppState.activeScreen)) {
+    onWinnerInsert: (winnerRow) => {
+      if (winnerRow.round_id === lastAnimatedRoundId) return; // already handled
+      lastAnimatedRoundId = winnerRow.round_id;
+
+      if (AppState.isDrawingLocally) return; // the initiating client's own DrawController flow already handles this
+
+      if (AppState.activeScreen === "home") {
+        const segments = winnerRow.eligible_snapshot || [];
+        const winnerSeg = segments.find((s) => s.id === winnerRow.member_id);
+        playRemoteWheelReveal(segments, winnerRow.member_id, {
+          memberName: winnerSeg ? winnerSeg.display_name : "Winner",
+          weekNumber: AppState.currentWeekNumber,
+        });
+      } else if (["history", "member"].includes(AppState.activeScreen)) {
         switchScreen(AppState.activeScreen);
       }
     },

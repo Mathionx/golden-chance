@@ -6,12 +6,18 @@
  * directly) so the "how do we talk to the backend" question stays
  * answered in exactly one place.
  *
- * UX NOTE ON ADMIN GATING: this file hides the Admin nav tab and
- * disables admin actions in the UI for non-admins. That is a
- * convenience so people don't see controls they can't use — it is
- * NOT the security boundary. The real boundary is server-side (RLS
- * + the SECURITY DEFINER functions); a non-admin poking the API
- * directly from devtools would still be rejected by Postgres.
+ * V1.1: the Draw screen no longer exists on its own — the wheel and
+ * the Start Draw button now live directly on Home (see renderHome).
+ * window.confirm/alert are gone; GCModal (modal.js) replaces them.
+ * Native time/datetime-local inputs are gone; TimePicker (timePicker.js)
+ * replaces them.
+ *
+ * UX NOTE ON ADMIN GATING: this file hides the Admin tab and admin
+ * controls in the UI for non-admins. That is a convenience so people
+ * don't see controls they can't use — it is NOT the security
+ * boundary. The real boundary is server-side (RLS + SECURITY DEFINER
+ * functions); a non-admin poking the API directly from devtools would
+ * still be rejected by Postgres.
  * ---------------------------------------------------------------
  */
 
@@ -37,12 +43,6 @@ function formatDrawDateTime(iso) {
   const datePart = d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   const timePart = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${datePart} \u00b7 ${timePart}`;
-}
-
-/** <input type="datetime-local"> works in local time with no timezone suffix; this converts that to a UTC ISO string for the backend. */
-function localDateTimeInputToIso(value) {
-  if (!value) return null;
-  return new Date(value).toISOString();
 }
 
 function showToast(message, tone = "neutral") {
@@ -76,7 +76,6 @@ async function switchScreen(screenId) {
   try {
     if (screenId === "home") await renderHome();
     if (screenId === "member") await renderMemberScreen();
-    if (screenId === "draw") await renderDrawScreen();
     if (screenId === "history") await renderHistoryScreen();
     if (screenId === "admin") await renderAdminScreen();
   } catch (err) {
@@ -85,7 +84,7 @@ async function switchScreen(screenId) {
   }
 }
 
-// ---------- HOME ----------
+// ---------- HOME (wheel + draw control now live here) ----------
 
 let countdownIntervalId = null;
 
@@ -98,27 +97,26 @@ async function renderHome() {
     return;
   }
 
-  const [members] = await Promise.all([getMembers()]);
+  const eligible = round.status === "no_round_scheduled" ? [] : await getEligibleMembers();
 
   root.innerHTML = `
     <div class="home-grid">
       <div>
-        <div class="cycle-hero">
-          <div class="cycle-ring-wrap">
-            ${buildCycleRingSvg(members, round)}
-            <div class="cycle-ring-center">
-              <div class="cycle-ring-week-label">Week</div>
-              <div class="cycle-ring-week">${round.weekNumber ?? "—"}</div>
-              <div class="cycle-ring-cycle">Cycle ${round.cycleNumber}</div>
-            </div>
-          </div>
-          <div class="cycle-legend">
-            <span><span class="legend-dot gold"></span>Eligible</span>
-            <span><span class="legend-dot muted"></span>Already won</span>
+        <div class="wheel-hero">
+          <div class="wheel-hero-caption">Week ${round.weekNumber ?? "\u2014"} \u00b7 Cycle ${round.cycleNumber}</div>
+          <div class="wheel-stage" id="wheel-stage"></div>
+          <div class="wheel-hero-sub" id="wheel-eligible-count">
+            ${eligible.length} eligible member${eligible.length === 1 ? "" : "s"}
           </div>
           ${buildStatusPill(round)}
+          <div id="draw-action-area" class="draw-action-area">
+            ${buildDrawActionArea({ round, eligibleCount: eligible.length, isAdmin: AuthSession.isAdmin() })}
+          </div>
+          <div id="draw-reveal-area"></div>
         </div>
+      </div>
 
+      <div>
         <div class="stat-grid">
           <div class="stat-tile">
             <div class="stat-tile-value">${round.totalMembers}</div>
@@ -130,26 +128,6 @@ async function renderHome() {
           </div>
         </div>
 
-        ${
-          AuthSession.isAdmin()
-            ? `<div class="card admin-cta-card">
-                 <div class="card-row" style="border:none; padding:0;">
-                   <div>
-                     <strong>Organizer tools</strong>
-                     <div class="profile-joined">You're signed in as the Ekub organizer.</div>
-                   </div>
-                 </div>
-                 <button class="btn btn-primary btn-block" id="home-start-draw-btn" style="margin-top:14px;" ${
-                   round.status === "scheduled" ? "" : "disabled"
-                 }>
-                   ${ICONS.sparkle} Start this week's draw
-                 </button>
-               </div>`
-            : ""
-        }
-      </div>
-
-      <div>
         <div class="card countdown-card">
           <div class="countdown-heading">${ICONS.clock} Next draw in</div>
           <div class="countdown-numbers" id="countdown-numbers">
@@ -172,10 +150,13 @@ async function renderHome() {
   `;
 
   if (round.nextDrawAt) startCountdown(round.nextDrawAt);
+  AppState.currentWeekNumber = round.weekNumber;
 
-  const homeStartBtn = document.getElementById("home-start-draw-btn");
-  if (homeStartBtn) {
-    homeStartBtn.addEventListener("click", () => switchScreen("draw"));
+  GCWheel.mount(document.getElementById("wheel-stage"), eligible.map((m) => ({ id: m.id, display_name: m.display_name })));
+
+  const startBtn = document.getElementById("start-draw-btn");
+  if (startBtn) {
+    startBtn.addEventListener("click", () => beginDrawAnimation(eligible.map((m) => ({ id: m.id, display_name: m.display_name })), round.roundId));
   }
 }
 
@@ -206,6 +187,22 @@ function buildStatusPill(round) {
   `;
 }
 
+function buildDrawActionArea({ round, eligibleCount, isAdmin }) {
+  if (round.status === "no_round_scheduled") {
+    return `<p class="empty-state">${
+      isAdmin ? "Schedule this week's draw from the Admin tab." : "Ask the organizer to schedule the next draw."
+    }</p>`;
+  }
+  if (!isAdmin) {
+    return `<p class="empty-state">Only the organizer can start the draw. You'll see it happen here the moment it does.</p>`;
+  }
+  if (eligibleCount === 0) {
+    return `<p class="empty-state">Everyone has already won this cycle. Start a new cycle from Admin to continue.</p>`;
+  }
+  const disabled = round.status !== "scheduled" ? "disabled" : "";
+  return `<button class="btn btn-primary btn-block" id="start-draw-btn" ${disabled}>${ICONS.sparkle} Start this week's draw</button>`;
+}
+
 function buildRecentWinnerCard(history) {
   if (!history.length) {
     return `<div class="card"><p class="empty-state">No winners recorded yet.</p></div>`;
@@ -222,42 +219,6 @@ function buildRecentWinnerCard(history) {
         </div>
       </div>
     </div>
-  `;
-}
-
-/** One dot per active member; gold = eligible, muted = already won this cycle. */
-function buildCycleRingSvg(members, round) {
-  const size = 210;
-  const cx = size / 2;
-  const cy = size / 2;
-  const r = 88;
-  const dotR = 7;
-  const activeMembers = members.filter((m) => m.is_active);
-  const n = activeMembers.length || 1;
-
-  // We know the count of eligible members from `round`, but not *which*
-  // members without another query. For the ring's visual purpose (show
-  // overall progress through the cycle), we approximate by marking the
-  // first (total - eligible) members as "already won" — good enough for
-  // a glanceable progress ring. The exact per-member status is always
-  // correct on the Member screen, which reads it directly.
-  const wonCount = Math.max(0, activeMembers.length - round.eligibleCount);
-
-  const dots = activeMembers
-    .map((m, i) => {
-      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-      const x = cx + r * Math.cos(angle);
-      const y = cy + r * Math.sin(angle);
-      const cls = i < wonCount ? "dot-won" : "dot-eligible";
-      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotR}" class="${cls}"><title>${m.display_name}</title></circle>`;
-    })
-    .join("");
-
-  return `
-    <svg viewBox="0 0 ${size} ${size}" role="img" aria-label="Cycle progress: one dot per member">
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--color-line)" stroke-width="1.5" />
-      ${dots}
-    </svg>
   `;
 }
 
@@ -288,6 +249,90 @@ function startCountdown(nextDrawIso) {
   countdownIntervalId = setInterval(tick, 1000);
 }
 
+// ---------- the draw itself (admin-triggered, runs on Home) ----------
+
+/**
+ * Called only by the admin's own click. Marks the round "drawing" first
+ * (a plain, RLS-checked update — this is what lets other connected
+ * clients start their own wheel spinning in real time before the
+ * winner is even known — see main.js's realtime handler), then calls
+ * the authoritative start_draw() RPC via DrawController, then animates
+ * toward whatever it returns.
+ */
+async function beginDrawAnimation(idleSegments, roundId) {
+  const startBtn = document.getElementById("start-draw-btn");
+  const actionArea = document.getElementById("draw-action-area");
+  const revealArea = document.getElementById("draw-reveal-area");
+
+  startBtn.disabled = true; // immediate — prevents double-click before any network round trip
+  startBtn.textContent = "Drawing…";
+  AppState.isDrawingLocally = true;
+
+  try {
+    await markRoundDrawing(roundId);
+  } catch {
+    // Non-fatal — worst case, other clients don't see the "spinning up"
+    // phase and only see the final reveal. The authoritative draw call
+    // below still proceeds normally.
+  }
+
+  DrawController.run({
+    idleSegments,
+    onError: (err) => {
+      AppState.isDrawingLocally = false;
+      actionArea.innerHTML = `<p class="empty-state">${err.message}</p>
+        <button class="btn btn-outline btn-block" id="draw-retry-btn">Back</button>`;
+      document.getElementById("draw-retry-btn").addEventListener("click", () => renderHome());
+    },
+    onDone: (result) => {
+      revealArea.innerHTML = buildWinnerReveal(result);
+      actionArea.innerHTML = `<button class="btn btn-outline btn-block" id="draw-refresh-btn">Done</button>`;
+      document.getElementById("draw-refresh-btn").addEventListener("click", () => {
+        AppState.isDrawingLocally = false;
+        renderHome();
+      });
+    },
+  });
+}
+
+function buildWinnerReveal(result) {
+  return `
+    <div class="winner-card wheel-reveal-card">
+      <div class="winner-card-eyebrow">Recorded and final \u00b7 Week ${result.weekNumber}</div>
+      <div class="winner-card-row">
+        <div class="winner-avatar">${initials(result.memberName)}</div>
+        <div><div class="winner-name">${result.memberName}</div></div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Invoked by main.js's realtime subscription when ANY client (including
+ * this one, if it wasn't the initiator) sees the authoritative winner
+ * arrive. Never decides anything — segments + winnerId both came from
+ * the database via Realtime.
+ */
+function playRemoteWheelReveal(segments, winnerId, result) {
+  const stage = document.getElementById("wheel-stage");
+  if (!stage) return; // not currently on Home
+  const revealArea = document.getElementById("draw-reveal-area");
+  const actionArea = document.getElementById("draw-action-area");
+  if (actionArea) actionArea.innerHTML = "";
+
+  GCWheel.spinToWinner(segments, winnerId, () => {
+    if (revealArea) revealArea.innerHTML = buildWinnerReveal(result);
+  });
+}
+
+/** Invoked when a `rounds` row flips to status='drawing' — lets passive viewers start spinning before the winner is known. */
+function playIndefiniteSpin() {
+  const rotor = document.getElementById("wheel-rotor");
+  if (rotor) rotor.classList.add("is-spinning-indefinite");
+  const pill = document.querySelector(".status-pill");
+  if (pill) pill.classList.add("drawing");
+}
+
 // ---------- MEMBER ----------
 
 async function renderMemberScreen() {
@@ -295,8 +340,6 @@ async function renderMemberScreen() {
   const me = await getCurrentUser();
   const [round, history] = await Promise.all([getCurrentRound(), getWinnerHistory()]);
 
-  // eligible_members() requires an active cycle; skip the call entirely
-  // rather than treating a expected "no cycle" state as an error.
   const eligible = round.noActiveCycle ? [] : await getEligibleMembers();
 
   const isEligible = round.noActiveCycle ? false : eligible.some((m) => m.id === me.id);
@@ -361,114 +404,6 @@ async function renderMemberScreen() {
   `;
 }
 
-// ---------- DRAW ----------
-
-async function renderDrawScreen() {
-  const root = document.getElementById("screen-draw");
-  const round = await getCurrentRound();
-
-  if (round.noActiveCycle) {
-    root.innerHTML = buildNoActiveCycleCard();
-    return;
-  }
-  if (round.status === "no_round_scheduled") {
-    root.innerHTML = `<div class="card"><p class="empty-state">No round is scheduled yet.${
-      AuthSession.isAdmin() ? " Schedule one from the Admin tab." : " Ask the organizer to schedule the next draw."
-    }</p></div>`;
-    return;
-  }
-
-  const eligible = await getEligibleMembers();
-  const canDraw = AuthSession.isAdmin() && round.status === "scheduled" && eligible.length > 0;
-
-  root.innerHTML = `
-    <div class="draw-stage">
-      <div class="draw-stage-heading">Week ${round.weekNumber} draw \u00b7 Cycle ${round.cycleNumber} \u00b7 ${eligible.length} eligible</div>
-
-      <div class="draw-name-window is-idle" id="draw-window">
-        <div class="draw-name-track" id="draw-track">
-          <div class="draw-name-item is-current" id="draw-name-current">
-            ${eligible.length ? "Ready when you are" : "No eligible members remain"}
-          </div>
-        </div>
-      </div>
-
-      <div class="draw-progress-label" id="draw-progress"></div>
-
-      <div class="draw-actions" id="draw-actions">
-        ${buildDrawActionArea({ canDraw, eligibleCount: eligible.length, isAdmin: AuthSession.isAdmin() })}
-      </div>
-
-      <p class="draw-fineprint">
-        The winner is selected and permanently recorded by the <code>start_draw()</code> database
-        function the moment the organizer presses the button. This animation only presents that
-        already-decided result — it never decides it.
-      </p>
-    </div>
-  `;
-
-  const startBtn = document.getElementById("start-draw-btn");
-  if (startBtn) {
-    startBtn.addEventListener("click", () => beginDrawAnimation(eligible.map((m) => m.display_name)));
-  }
-}
-
-function buildDrawActionArea({ canDraw, eligibleCount, isAdmin }) {
-  if (!isAdmin) {
-    return `<p class="empty-state">Only the organizer can start the draw. You'll see the result here the moment it happens.</p>`;
-  }
-  if (eligibleCount === 0) {
-    return `<p class="empty-state">Everyone has already won this cycle. Start a new cycle from Admin to continue.</p>`;
-  }
-  return `<button class="btn btn-primary btn-block" id="start-draw-btn" ${canDraw ? "" : "disabled"}>${
-    ICONS.sparkle
-  } Start this week's draw</button>`;
-}
-
-function beginDrawAnimation(eligibleNames) {
-  const startBtn = document.getElementById("start-draw-btn");
-  const windowEl = document.getElementById("draw-window");
-  const nameEl = document.getElementById("draw-name-current");
-  const progressEl = document.getElementById("draw-progress");
-  const actionsEl = document.getElementById("draw-actions");
-
-  startBtn.disabled = true; // immediate, prevents double-click before the network round trip even starts
-  startBtn.textContent = "Drawing…";
-  windowEl.classList.remove("is-idle");
-
-  DrawController.run({
-    eligibleNames,
-    onTick: (name) => {
-      nameEl.textContent = name;
-    },
-    onProgress: (msg) => {
-      progressEl.textContent = msg;
-    },
-    onError: (err) => {
-      windowEl.classList.remove("is-idle");
-      progressEl.textContent = "";
-      actionsEl.innerHTML = `<p class="empty-state">${err.message}</p>
-        <button class="btn btn-outline btn-block" id="draw-retry-btn">Back</button>`;
-      document.getElementById("draw-retry-btn").addEventListener("click", () => renderDrawScreen());
-    },
-    onDone: (result) => {
-      windowEl.classList.add("is-revealed");
-      progressEl.textContent = "This week's winner:";
-      actionsEl.innerHTML = `
-        <div class="winner-card" style="margin-top:0;">
-          <div class="winner-card-eyebrow">Recorded and final \u00b7 Week ${result.weekNumber}</div>
-          <div class="winner-card-row">
-            <div class="winner-avatar">${initials(result.memberName)}</div>
-            <div><div class="winner-name">${result.memberName}</div></div>
-          </div>
-        </div>
-        <button class="btn btn-outline btn-block" id="draw-done-btn" style="margin-top:12px;">Back to dashboard</button>
-      `;
-      document.getElementById("draw-done-btn").addEventListener("click", () => switchScreen("home"));
-    },
-  });
-}
-
 // ---------- HISTORY ----------
 
 async function renderHistoryScreen() {
@@ -507,8 +442,8 @@ async function renderHistoryScreen() {
 // ---------- ADMIN ----------
 // Every write in this screen can fail with a 403 from Postgres if the
 // signed-in user somehow isn't actually an admin (e.g. their role was
-// changed mid-session) — see the try/catch in wireAdminEvents. The nav
-// tab is hidden for non-admins as a convenience; this is the backstop.
+// changed mid-session) — see runAdminAction below. The nav tab is
+// hidden for non-admins as a convenience; this is the backstop.
 
 async function renderAdminScreen() {
   const root = document.getElementById("screen-admin");
@@ -540,8 +475,8 @@ async function renderAdminScreen() {
           </select>
         </div>
         <div class="form-field">
-          <label for="schedule-time">Draw time (${settings.timezone})</label>
-          <input type="time" id="schedule-time" class="text-field" value="${settings.draw_time?.slice(0, 5) || "19:00"}" />
+          <label>Draw time</label>
+          ${TimePicker.renderHtml("settings-time", settings.draw_time?.slice(0, 5) || "19:00")}
         </div>
         <button class="btn btn-outline btn-block" id="save-schedule-btn">Save schedule</button>
         ${
@@ -567,18 +502,24 @@ async function renderAdminScreen() {
         !round.noActiveCycle && round.status === "no_round_scheduled"
           ? `
         <div class="form-field" style="margin-top:14px;">
-          <label for="next-round-at">Schedule next draw</label>
-          <input type="datetime-local" id="next-round-at" class="text-field" />
+          <label>Schedule next draw</label>
+          ${TimePicker.renderDateTimeHtml("next-round-at", null)}
         </div>
         <button class="btn btn-primary btn-block" id="schedule-round-btn">Schedule round</button>
       `
           : ""
       }
       <div class="form-field" style="margin-top:14px;">
-        <label for="new-cycle-first-round-at">First draw date for a new cycle</label>
-        <input type="datetime-local" id="new-cycle-first-round-at" class="text-field" />
+        <label>First draw date for a new cycle</label>
+        ${TimePicker.renderDateTimeHtml("new-cycle-first-round-at", null)}
       </div>
-      <button class="btn btn-terracotta btn-block" id="new-cycle-btn">Start a new cycle</button>
+      <button class="btn btn-outline btn-block" id="new-cycle-btn">Start a new cycle</button>
+
+      ${
+        !round.noActiveCycle
+          ? `<button class="btn btn-terracotta btn-block" id="reset-cycle-btn" style="margin-top:10px;">Reset current cycle</button>`
+          : ""
+      }
     </div>
 
     <h2 class="admin-section-title">Members (${members.length})</h2>
@@ -626,7 +567,24 @@ async function renderAdminScreen() {
         </div>
       </div>
     </div>
+
+    <div class="modal-backdrop" id="removal-modal-backdrop">
+      <div class="modal-sheet">
+        <div class="modal-sheet-title" id="removal-modal-title">Remove member</div>
+        <p class="gc-confirm-message" id="removal-modal-message"></p>
+        <div class="modal-actions" style="flex-direction:column;">
+          <button class="btn btn-outline btn-block" id="removal-deactivate-btn">Deactivate (keeps history)</button>
+          <button class="btn btn-terracotta btn-block" id="removal-delete-btn" style="margin-top:8px;">Delete permanently</button>
+          <button class="btn btn-outline btn-block" id="removal-cancel-btn" style="margin-top:8px;">Cancel</button>
+        </div>
+      </div>
+    </div>
   `;
+
+  TimePicker.wire("settings-time");
+  const nextRoundPicker = document.getElementById("next-round-at-wrap");
+  if (nextRoundPicker) TimePicker.wireDateTime("next-round-at");
+  TimePicker.wireDateTime("new-cycle-first-round-at");
 
   const history = await getWinnerHistory();
   document.getElementById("admin-history-list").innerHTML = history.length
@@ -650,7 +608,7 @@ async function renderAdminScreen() {
 
 function buildAdminMemberRow(member) {
   return `
-    <div class="member-row" data-id="${member.id}">
+    <div class="member-row" data-id="${member.id}" data-name="${member.display_name}">
       <div class="member-row-avatar">${initials(member.display_name)}</div>
       <div>
         <div class="member-row-name">${member.display_name}${member.role === "admin" ? " \u00b7 Admin" : ""}</div>
@@ -661,11 +619,7 @@ function buildAdminMemberRow(member) {
       </span>
       <div class="member-row-actions">
         <button class="icon-btn" data-action="edit" title="Edit member">${ICONS.pencil}</button>
-        ${
-          member.is_active
-            ? `<button class="icon-btn danger" data-action="deactivate" title="Deactivate member">${ICONS.trash}</button>`
-            : ""
-        }
+        <button class="icon-btn danger" data-action="remove" title="Remove member">${ICONS.trash}</button>
       </div>
     </div>
   `;
@@ -693,7 +647,7 @@ function wireAdminEvents() {
 
   document.getElementById("save-schedule-btn").addEventListener("click", async () => {
     const day_of_week = Number(document.getElementById("schedule-day").value);
-    const draw_time = document.getElementById("schedule-time").value;
+    const draw_time = TimePicker.read24("settings-time") + ":00";
     const ok = await runAdminAction(
       () => adminUpdateDrawSettings({ day_of_week, draw_time }),
       "Schedule saved."
@@ -704,20 +658,47 @@ function wireAdminEvents() {
   const scheduleRoundBtn = document.getElementById("schedule-round-btn");
   if (scheduleRoundBtn) {
     scheduleRoundBtn.addEventListener("click", async () => {
-      const iso = localDateTimeInputToIso(document.getElementById("next-round-at").value);
+      const iso = TimePicker.readDateTimeIso("next-round-at");
       if (!iso) return showToast("Pick a date and time first.", "error");
       const ok = await runAdminAction(() => adminScheduleNextRound(iso), "Next round scheduled.");
-      if (ok) { renderAdminScreen(); }
+      if (ok) renderAdminScreen();
     });
   }
 
   document.getElementById("new-cycle-btn").addEventListener("click", async () => {
-    const iso = localDateTimeInputToIso(document.getElementById("new-cycle-first-round-at").value);
+    const iso = TimePicker.readDateTimeIso("new-cycle-first-round-at");
     if (!iso) return showToast("Pick a first draw date first.", "error");
-    if (!confirm("Start a new cycle? Every member becomes eligible again.")) return;
+    const confirmed = await GCModal.confirm({
+      title: "Start a new cycle?",
+      message: "Every member becomes eligible again. Past cycles and winner history are kept.",
+      confirmLabel: "Start new cycle",
+    });
+    if (!confirmed) return;
     const ok = await runAdminAction(() => adminStartNewCycle(iso), "New cycle started.");
     if (ok) renderAdminScreen();
   });
+
+  const resetBtn = document.getElementById("reset-cycle-btn");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      const confirmed = await GCModal.confirm({
+        title: "Reset Cycle",
+        message: "This will permanently reset the current cycle and its draw history. This action cannot be undone.",
+        confirmLabel: "Reset cycle",
+        danger: true,
+        requirePhrase: "RESET CYCLE",
+      });
+      if (!confirmed) return;
+      const ok = await runAdminAction(async () => {
+        const result = await adminResetCycle();
+        showToast(`Cycle reset — ${result.winners_removed} winner record(s) cleared.`, "success");
+      });
+      if (ok) {
+        renderAdminScreen();
+        if (AppState.activeScreen === "home") renderHome();
+      }
+    });
+  }
 
   document.getElementById("add-member-btn").addEventListener("click", async () => {
     const idInput = document.getElementById("new-member-telegram-id");
@@ -733,12 +714,10 @@ function wireAdminEvents() {
     if (ok) renderAdminScreen();
   });
 
-  document.querySelectorAll('#admin-members-list [data-action="deactivate"]').forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
-      const id = e.target.closest(".member-row").dataset.id;
-      if (!confirm("Deactivate this member? They'll keep their history but can no longer log in or be drawn.")) return;
-      const ok = await runAdminAction(() => adminDeactivateMember(id), "Member deactivated.");
-      if (ok) renderAdminScreen();
+  document.querySelectorAll('#admin-members-list [data-action="remove"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const row = e.target.closest(".member-row");
+      openRemovalSheet(row.dataset.id, row.dataset.name);
     });
   });
 
@@ -747,10 +726,13 @@ function wireAdminEvents() {
   });
 
   document.getElementById("edit-cancel-btn").addEventListener("click", closeEditModal);
+  document.getElementById("edit-modal-backdrop").addEventListener("click", (e) => {
+    if (e.target.id === "edit-modal-backdrop") closeEditModal();
+  });
 
-  const backdrop = document.getElementById("edit-modal-backdrop");
-  backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) closeEditModal();
+  document.getElementById("removal-cancel-btn").addEventListener("click", closeRemovalSheet);
+  document.getElementById("removal-modal-backdrop").addEventListener("click", (e) => {
+    if (e.target.id === "removal-modal-backdrop") closeRemovalSheet();
   });
 }
 
@@ -785,4 +767,45 @@ async function openEditModal(id) {
 function closeEditModal() {
   document.getElementById("edit-modal-backdrop").classList.remove("is-open");
   editingMemberId = null;
+}
+
+/** Step 1 of removal: choose Deactivate vs Delete permanently. */
+let removalTargetId = null;
+function openRemovalSheet(id, name) {
+  removalTargetId = id;
+  document.getElementById("removal-modal-title").textContent = `Remove ${name}?`;
+  document.getElementById("removal-modal-message").textContent =
+    "Deactivating keeps their history and can be undone later by re-activating them in Edit. Deleting permanently is irreversible and only possible if they've never won a draw.";
+  document.getElementById("removal-modal-backdrop").classList.add("is-open");
+
+  document.getElementById("removal-deactivate-btn").onclick = async () => {
+    closeRemovalSheet();
+    const confirmed = await GCModal.confirm({
+      title: "Deactivate member?",
+      message: `${name} will keep their history but can no longer log in or be drawn.`,
+      confirmLabel: "Deactivate",
+    });
+    if (!confirmed) return;
+    const ok = await runAdminAction(() => adminDeactivateMember(id), "Member deactivated.");
+    if (ok) renderAdminScreen();
+  };
+
+  document.getElementById("removal-delete-btn").onclick = async () => {
+    closeRemovalSheet();
+    const confirmed = await GCModal.confirm({
+      title: "Delete permanently",
+      message: `This permanently removes ${name} from Golden Chance. This cannot be undone.`,
+      confirmLabel: "Delete permanently",
+      danger: true,
+      requirePhrase: "DELETE",
+    });
+    if (!confirmed) return;
+    const ok = await runAdminAction(() => adminDeleteMemberPermanently(id), "Member deleted.");
+    if (ok) renderAdminScreen();
+  };
+}
+
+function closeRemovalSheet() {
+  document.getElementById("removal-modal-backdrop").classList.remove("is-open");
+  removalTargetId = null;
 }

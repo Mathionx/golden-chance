@@ -72,7 +72,7 @@ async function getWinnerHistory() {
     .from("winners")
     .select(
       `
-      id, selected_at, selection_method,
+      id, selected_at, selection_method, eligible_snapshot,
       cycle:cycles ( cycle_number ),
       round:rounds ( week_number ),
       member:members ( id, display_name )
@@ -90,6 +90,7 @@ async function getWinnerHistory() {
     memberName: w.member?.display_name,
     date: w.selected_at,
     selectionMethod: w.selection_method,
+    eligibleSnapshot: w.eligible_snapshot || [], // used to render the wheel identically for every viewer
   }));
 }
 
@@ -158,6 +159,20 @@ async function getDrawSettings() {
   return data;
 }
 
+/**
+ * Flips a round to status='drawing' before the actual winner-selection
+ * call. This is what lets OTHER connected clients start their own wheel
+ * animation in real time, before the winner is even known — see
+ * main.js's realtime handler. It is a plain, RLS-checked update (admins
+ * already have UPDATE rights on rounds); it does NOT touch winners and
+ * cannot be used to fake a completion (the prevent_illegal_round_updates
+ * trigger only allows status='completed' via the internal draw flag).
+ */
+async function markRoundDrawing(roundId) {
+  const { error } = await db().from("rounds").update({ status: "drawing" }).eq("id", roundId);
+  if (error) throw normalizeError(error, "Couldn't update round status.");
+}
+
 // ---------------------------------------------------------------
 // The draw — the only place a winner is decided (in Postgres, not here)
 // ---------------------------------------------------------------
@@ -171,12 +186,25 @@ async function startDraw() {
   const { data, error } = await db().rpc("start_draw");
   if (error) throw normalizeError(error, "Couldn't start the draw.");
   const result = Array.isArray(data) ? data[0] : data;
+
+  // The RPC itself only returns the winner facts; fetch the eligible
+  // snapshot the backend captured for this exact round so the wheel
+  // renders from the same authoritative list every other client will
+  // see via Realtime — never recomputed client-side.
+  const { data: winnerRow, error: snapshotErr } = await db()
+    .from("winners")
+    .select("eligible_snapshot")
+    .eq("round_id", result.round_id)
+    .single();
+  if (snapshotErr) throw normalizeError(snapshotErr, "Draw recorded, but couldn't load the wheel snapshot.");
+
   return {
     roundId: result.round_id,
     weekNumber: result.week_number,
     memberId: result.member_id,
     memberName: result.display_name,
     selectedAt: result.selected_at,
+    eligibleSnapshot: winnerRow.eligible_snapshot || [],
   };
 }
 
@@ -213,11 +241,45 @@ async function adminDeactivateMember(id) {
   return data;
 }
 
+/**
+ * Hard delete. Postgres itself enforces whether this is actually safe:
+ * winners.member_id references members.id ON DELETE RESTRICT, so this
+ * throws a foreign_key_violation (23503) for any member with winner
+ * history — that check happens in the database, not in this function.
+ * We surface it as a specific, friendly error code the UI can react to.
+ */
+async function adminDeleteMemberPermanently(id) {
+  const { error } = await db().from("members").delete().eq("id", id);
+  if (error) {
+    if (error.code === "23503") {
+      const err = new Error("This member has winner history and can't be permanently deleted — deactivate instead.");
+      err.code = "HAS_HISTORY";
+      throw err;
+    }
+    throw normalizeError(error, "Couldn't delete member.");
+  }
+  return true;
+}
+
 async function adminStartNewCycle(firstRoundAtIso) {
   const { data, error } = await db().rpc("admin_start_new_cycle", {
     p_first_round_at: firstRoundAtIso,
   });
   if (error) throw normalizeError(error, "Couldn't start a new cycle.");
+  return Array.isArray(data) ? data[0] : data;
+}
+
+/**
+ * Deletes ONLY the active cycle's rounds/winners, leaving the cycle
+ * itself open to be re-run from week 1. Past, non-active cycles are
+ * never touched — see admin_reset_cycle() in 0007_v1_1_schema.sql.
+ * This is a high-risk, irreversible action; the UI gates it behind a
+ * typed confirmation phrase (see modal.js), but the real authorization
+ * check happens inside the SQL function itself.
+ */
+async function adminResetCycle() {
+  const { data, error } = await db().rpc("admin_reset_cycle");
+  if (error) throw normalizeError(error, "Couldn't reset the cycle.");
   return Array.isArray(data) ? data[0] : data;
 }
 
@@ -246,16 +308,25 @@ async function adminUpdateDrawSettings(newSettings) {
 // ---------------------------------------------------------------
 
 /**
- * Subscribes to round completions and new winner rows. Returns the
- * channel so the caller can unsubscribe (e.g. supabase.removeChannel).
+ * Subscribes to round changes and new winner rows. Returns the channel
+ * so the caller can unsubscribe (e.g. supabase.removeChannel).
+ * onRoundChange fires for both INSERT (a new round was scheduled) and
+ * UPDATE (status changed, e.g. to 'drawing' or 'completed') so the UI
+ * can react to a round becoming visible/drawing without waiting for a
+ * manual refresh.
  */
-function subscribeToDrawUpdates({ onRoundUpdate, onWinnerInsert } = {}) {
+function subscribeToDrawUpdates({ onRoundChange, onWinnerInsert } = {}) {
   const channel = db()
     .channel("golden-chance-draw")
     .on(
       "postgres_changes",
+      { event: "INSERT", schema: "public", table: "rounds" },
+      (payload) => onRoundChange && onRoundChange(payload.new, "INSERT")
+    )
+    .on(
+      "postgres_changes",
       { event: "UPDATE", schema: "public", table: "rounds" },
-      (payload) => onRoundUpdate && onRoundUpdate(payload.new)
+      (payload) => onRoundChange && onRoundChange(payload.new, "UPDATE")
     )
     .on(
       "postgres_changes",
